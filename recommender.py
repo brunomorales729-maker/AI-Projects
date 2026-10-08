@@ -1,17 +1,18 @@
-import os
-import gdown
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
+import os
+import gdown
 
-# URL compartida de Google Drive para rating.csv
-DRIVE_URL_RATING = "https://drive.google.com/file/d/1O1TbLg5H8UFJM2DsBm5cLrGzKz-lQVrD/view?usp=sharing"
+DRIVE_RATING_FILE_ID = "1O1TbLg5H8UFJM2DsBm5cLrGzKz-lQVrD"
 
 def ensure_ratings_exist(rating_path="rating.csv"):
-    """Descarga rating.csv desde Google Drive directamente en la raíz si no existe."""
+    """Descarga rating.csv desde Google Drive si no existe."""
     if not os.path.exists(rating_path):
-        gdown.download(DRIVE_URL_RATING, rating_path, quiet=False, fuzzy=True)
+        url = f"https://drive.google.com/uc?id={DRIVE_RATING_FILE_ID}"
+        # Usamos gdown sin el parámetro fuzzy conflictivo
+        gdown.download(id=DRIVE_RATING_FILE_ID, output=rating_path, quiet=False)
     return rating_path
 
 def load_and_preprocess_data(anime_path='anime.csv', rating_path='rating.csv'):
