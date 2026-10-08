@@ -1,33 +1,44 @@
+import os
+import gdown
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
-import os
-import gdown
 
 DRIVE_URL_RATING = "https://drive.google.com/uc?id=1O1TbLg5H8UFJM2DsBm5cLrGzKz-lQVrD"
 
 def ensure_ratings_exist(rating_path="rating.csv"):
     """Descarga rating.csv desde Google Drive si no existe."""
     if not os.path.exists(rating_path):
-        # NOTA: Se retiró fuzzy=True para evitar el TypeError
         gdown.download(DRIVE_URL_RATING, rating_path, quiet=False)
     return rating_path
 
 def load_and_preprocess_data(anime_path='anime.csv', rating_path='rating.csv'):
+    # Verificar y descargar rating.csv si falta
     rating_path = ensure_ratings_exist(rating_path)
     
+    # 1. Cargar metadatos
     df_anime = pd.read_csv(anime_path)
     df_anime.dropna(subset=['genre', 'rating', 'type'], inplace=True)
     
-    df_ratings = pd.read_csv(rating_path)
+    # 2. Cargar ratings optimizando tipos de datos (reduce drásticamente el uso de RAM)
+    dtypes = {
+        'user_id': 'int32',
+        'anime_id': 'int32',
+        'rating': 'int8'
+    }
+    df_ratings = pd.read_csv(rating_path, dtype=dtypes)
     df_ratings = df_ratings[df_ratings['rating'] > 0]
     
-    user_counts = df_ratings['user_id'].value_counts()
+    # 3. Filtrar para reducir la matriz y evitar que Streamlit Cloud se quede sin RAM:
+    # Conservamos animes con al menos 250 calificaciones y usuarios con al menos 50 calificaciones
     anime_counts = df_ratings['anime_id'].value_counts()
+    popular_animes = anime_counts[anime_counts >= 250].index
+    df_ratings = df_ratings[df_ratings['anime_id'].isin(popular_animes)]
     
-    df_ratings = df_ratings[df_ratings['user_id'].isin(user_counts[user_counts >= 30].index)]
-    df_ratings = df_ratings[df_ratings['anime_id'].isin(anime_counts[anime_counts >= 100].index)]
+    user_counts = df_ratings['user_id'].value_counts()
+    active_users = user_counts[user_counts >= 50].index
+    df_ratings = df_ratings[df_ratings['user_id'].isin(active_users)]
     
     return df_anime, df_ratings
 
@@ -38,6 +49,7 @@ def get_genres_list(df_anime):
             genres.add(g.strip())
     return sorted(list(genres))
 
+# 1. Recomendador para usuarios nuevos (Géneros)
 def recommend_by_genres(df_anime, selected_genres, anime_type='TV', top_n=10):
     subset = df_anime.copy()
     if anime_type != 'Todos':
@@ -60,16 +72,24 @@ def recommend_by_genres(df_anime, selected_genres, anime_type='TV', top_n=10):
     
     return q_anime.sort_values(by='weighted_score', ascending=False).head(top_n)
 
-def build_pca_similarity_matrix(df_ratings, n_components=50):
+# 2. Recomendador Colaborativo con PCA (Ligero en memoria)
+def build_pca_similarity_matrix(df_ratings, n_components=30):
     """
-    Comprime las dimensiones de usuarios a 'n_components' con PCA
-    para calcular la matriz de similitud de forma rápida y ligera.
+    Construye la matriz con tipos flotantes de 32 bits y 30 componentes PCA
+    para mantenerse por debajo de los límites de memoria de la nube.
     """
-    user_item = df_ratings.pivot_table(index='anime_id', columns='user_id', values='rating').fillna(0)
+    user_item = df_ratings.pivot_table(
+        index='anime_id', 
+        columns='user_id', 
+        values='rating', 
+        fill_value=0
+    ).astype(np.float32)
     
+    # Reducción de dimensionalidad con PCA
     pca = PCA(n_components=n_components, random_state=42)
     anime_pca_matrix = pca.fit_transform(user_item.values)
     
+    # Similitud coseno
     similarity = cosine_similarity(anime_pca_matrix)
     anime_ids = list(user_item.index)
     
