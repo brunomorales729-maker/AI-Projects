@@ -4,7 +4,7 @@ from recommender import (
     load_and_preprocess_data, 
     get_genres_list, 
     recommend_by_genres,
-    build_pca_similarity_matrix, # <-- IMPORTAR LA NUEVA FUNCIÓN
+    build_pca_similarity_matrix,
     recommend_from_user_ratings
 )
 
@@ -12,31 +12,29 @@ st.set_page_config(page_title="Sistema de Recomendación de Anime", layout="wide
 
 @st.cache_data
 def get_data():
-    return load_and_preprocess_data()
+    with st.spinner("Descargando base de datos de calificaciones (rating.csv) y preprocesando... Por favor espera."):
+        return load_and_preprocess_data()
 
 @st.cache_data
 def get_similarity(df_ratings):
-    return build_pca_similarity_matrix(df_ratings, n_components=50)
+    with st.spinner("Aplicando reducción de dimensionalidad con PCA..."):
+        return build_pca_similarity_matrix(df_ratings, n_components=50)
 
-# Interfaz inicial
 st.title("🎌 Sistema de Recomendación de Anime")
-st.write("Encuentra tu próximo anime según tus géneros favoritos o calificando títulos conocidos.")
+st.write("Encuentra animes según tus géneros favoritos o calificando títulos conocidos.")
 
 df_anime, df_ratings = get_data()
 all_genres = get_genres_list(df_anime)
 
-# Pestañas para cada tipo de recomendación
-tab1, tab2 = st.tabs(["🆕 Recomendación por Géneros (Nuevos Usuarios)", "⭐ Recomendación por Calificaciones"])
+tab1, tab2 = st.tabs(["🆕 Recomendación por Géneros", "⭐ Recomendación por Calificaciones (PCA)"])
 
-# --- TAB 1: PARA USUARIOS NUEVOS ---
+# --- TAB 1: GÉNEROS ---
 with tab1:
     st.header("Descubre por Géneros")
-    st.write("Selecciona tus temáticas de preferencia y formato para obtener las mejores recomendaciones.")
-    
     col1, col2 = st.columns([3, 1])
     with col1:
         selected_genres = st.multiselect(
-            "Elige uno o más géneros:",
+            "Elige géneros:",
             options=all_genres,
             default=["Action", "Adventure"] if "Action" in all_genres else []
         )
@@ -61,19 +59,15 @@ with tab1:
         else:
             st.error("Por favor selecciona al menos un género.")
 
-# --- TAB 2: PARA USUARIOS CON CALIFICACIONES ---
+# --- TAB 2: CALIFICACIONES CON PCA ---
 with tab2:
     st.header("Califica Animes y Recibe Recomendaciones")
-    st.write("Selecciona algunos títulos populares que hayas visto y dales una calificación.")
+    st.write("Selecciona algunos títulos conocidos y dales una calificación del 1 al 10.")
     
     sim_matrix = get_similarity(df_ratings)
-    
-    # Lista de animes populares para que el usuario califique
     popular_animes = df_anime[df_anime['anime_id'].isin(sim_matrix.index)].sort_values(by='members', ascending=False).head(30)
     
     user_ratings = {}
-    st.write("#### Califica del 1 al 10 los que hayas visto:")
-    
     cols = st.columns(3)
     for i, (_, row) in enumerate(popular_animes.head(9).iterrows()):
         col = cols[i % 3]
@@ -94,4 +88,4 @@ with tab2:
                     st.write(f"**Géneros:** `{row['genre']}`")
                     st.divider()
         else:
-            st.warning("Califica al menos un anime (asigna una puntuación mayor a 0).")
+            st.warning("Califica al menos un anime para poder recomendarte.")
