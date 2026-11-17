@@ -1,0 +1,58 @@
+{
+  "checkpoint": "/home/bmr/IA/Ajedrez GPT/ChessAI_refactored/ChessAI/models/chess_model_best.pth",
+  "stockfish": "/home/bmr/IA/Ajedrez GPT/.venv/bin/stockfish",
+  "skill_levels": [
+    2,
+    8,
+    14
+  ],
+  "games_per_level": 1,
+  "simulations": 0,
+  "max_plies": 120,
+  "results": {
+    "loss": 3
+  },
+  "baseline_head_to_head_results": {},
+  "baseline_checkpoint": null,
+  "official_games_excluding_truncation": 3,
+  "win_rate_score": 0.0,
+  "mean_decision_seconds": 0.006372333970764463,
+  "centipawn_loss_by_stage": {
+    "opening": 381.14285714285717,
+    "middlegame": 153.58823529411765
+  },
+  "stockfish_best_move_agreement_by_stage": {
+    "opening": 0.08571428571428572,
+    "middlegame": 0.08823529411764706
+  },
+  "games": [
+    {
+      "skill_level": 2,
+      "game": 1,
+      "agent_color": "white",
+      "result": "loss",
+      "plies": 66,
+      "agent_decisions": 33,
+      "mean_decision_seconds": 0.010882762454429845
+    },
+    {
+      "skill_level": 8,
+      "game": 1,
+      "agent_color": "white",
+      "result": "loss",
+      "plies": 50,
+      "agent_decisions": 25,
+      "mean_decision_seconds": 0.002144175959547283
+    },
+    {
+      "skill_level": 14,
+      "game": 1,
+      "agent_color": "white",
+      "result": "loss",
+      "plies": 22,
+      "agent_decisions": 11,
+      "mean_decision_seconds": 0.0024504985452619044
+    }
+  ],
+  "truncation_policy": "Games reaching max_plies are reported as truncated and excluded from win/draw/loss and win-rate calculations."
+}

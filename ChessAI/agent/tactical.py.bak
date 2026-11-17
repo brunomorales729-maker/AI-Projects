@@ -1,0 +1,387 @@
+
+"""Tactical analysis helpers for Tactical Engine V2.
+
+Independent from the neural network and MCTS. Reports attacks on both sides,
+identifies undefended attacked pieces, ranks legal captures by a bounded
+static-exchange evaluation (SEE), and provides a bounded quiescence search.
+
+Scores are in pawn units and from the side-to-move perspective.
+This is a tactical helper, not a complete chess evaluation function.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+import chess
+
+
+PIECE_VALUES = {
+    chess.PAWN: 1.0,
+    chess.KNIGHT: 3.0,
+    chess.BISHOP: 3.25,
+    chess.ROOK: 5.0,
+    chess.QUEEN: 9.0,
+    chess.KING: 20.0,
+}
+MATE_SCORE = 100_000.0
+
+
+@dataclass(frozen=True)
+class PieceThreat:
+    square: str
+    piece: str
+    color: str
+    attacked: bool
+    defended: bool
+    attacker_count: int
+    defender_count: int
+    hanging: bool
+    least_attacker_value: Optional[float]
+
+
+@dataclass(frozen=True)
+class TacticalReport:
+    side_to_move: str
+    legal_capture_count: int
+    captures: tuple[str, ...]
+    threatened_pieces: tuple[PieceThreat, ...]
+
+
+class TacticalAnalyzer:
+    """Balanced tactical helper; default quiescence horizon is four plies."""
+
+    def __init__(self, quiescence_depth: int = 4):
+        if quiescence_depth < 0:
+            raise ValueError("quiescence_depth must be >= 0")
+        self.quiescence_depth = int(quiescence_depth)
+        self.nodes_searched = 0
+
+    @staticmethod
+    def material_balance(
+        board: chess.Board,
+        perspective: Optional[chess.Color] = None
+    ) -> float:
+        """Material balance in pawn units, positive for perspective."""
+        if perspective is None:
+            perspective = board.turn
+
+        score = 0.0
+        for piece in board.piece_map().values():
+            value = PIECE_VALUES[piece.piece_type]
+            score += value if piece.color == perspective else -value
+
+        return score
+
+    @staticmethod
+    def _piece_name(piece: chess.Piece) -> str:
+        return chess.piece_name(piece.piece_type).capitalize()
+
+    @staticmethod
+    def _color_name(color: chess.Color) -> str:
+        return "white" if color == chess.WHITE else "black"
+
+    @staticmethod
+    def _capture_value(board: chess.Board, move: chess.Move) -> float:
+        victim = board.piece_at(move.to_square)
+
+        if board.is_en_passant(move):
+            victim_value = PIECE_VALUES[chess.PAWN]
+        else:
+            victim_value = (
+                PIECE_VALUES[victim.piece_type] if victim else 0.0
+            )
+
+        if move.promotion:
+            victim_value += (
+                PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN]
+            )
+
+        return victim_value
+
+    def _see_reply(
+        self,
+        board: chess.Board,
+        target: chess.Square,
+        depth: int
+    ) -> float:
+        """Best net material gain from further legal recaptures on target."""
+        if depth <= 0 or board.is_game_over(claim_draw=True):
+            return 0.0
+
+        # The side can always decline to recapture.
+        best_gain = 0.0
+
+        candidates = [
+            move for move in board.legal_moves
+            if move.to_square == target and board.is_capture(move)
+        ]
+
+        candidates.sort(
+            key=lambda move: self._capture_value(board, move),
+            reverse=True
+        )
+
+        for move in candidates:
+            gain = self._capture_value(board, move)
+
+            board.push(move)
+            net = gain - self._see_reply(board, target, depth - 1)
+            board.pop()
+
+            if net > best_gain:
+                best_gain = net
+
+        return best_gain
+
+    def static_exchange(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        max_plies: int = 8
+    ) -> float:
+        """Estimate net material gain of a legal capture, in pawn units.
+
+        Positive means favorable for the mover; negative means the capture
+        likely loses material after the opponent's best legal recaptures.
+        """
+        if move not in board.legal_moves:
+            raise ValueError(f"Move is not legal in this position: {move}")
+
+        if not board.is_capture(move) and move.promotion is None:
+            return 0.0
+
+        immediate_gain = self._capture_value(board, move)
+        target = move.to_square
+
+        board.push(move)
+        reply_gain = self._see_reply(
+            board, target, max_plies - 1
+        )
+        board.pop()
+
+        return immediate_gain - reply_gain
+
+    def analyze(self, board: chess.Board) -> TacticalReport:
+        """Report legal captures and attacked pieces of both colors."""
+        us = board.turn
+
+        legal_captures = [
+            move for move in board.legal_moves
+            if board.is_capture(move) or move.promotion is not None
+        ]
+
+        ordered_captures = sorted(
+            legal_captures,
+            key=lambda move: self.static_exchange(board, move),
+            reverse=True
+        )
+
+        captures = tuple(
+            f"{board.uci(move)} "
+            f"(SEE {self.static_exchange(board, move):+.2f})"
+            for move in ordered_captures
+        )
+
+        threats = []
+
+        for square, piece in board.piece_map().items():
+            enemy = not piece.color
+
+            attacked_by = list(board.attackers(enemy, square))
+
+            if not attacked_by:
+                continue
+
+            defenders = list(board.attackers(piece.color, square))
+
+            attacker_values = [
+                PIECE_VALUES[board.piece_at(attacker_sq).piece_type]
+                for attacker_sq in attacked_by
+                if board.piece_at(attacker_sq) is not None
+            ]
+
+            threats.append(
+                PieceThreat(
+                    square=chess.square_name(square),
+                    piece=self._piece_name(piece),
+                    color=self._color_name(piece.color),
+                    attacked=True,
+                    defended=bool(defenders),
+                    attacker_count=len(attacked_by),
+                    defender_count=len(defenders),
+                    hanging=(piece.piece_type != chess.KING and not defenders),
+                    least_attacker_value=(
+                        min(attacker_values) if attacker_values else None
+                    ),
+                )
+            )
+
+        piece_values_by_name = {
+            "Pawn": PIECE_VALUES[chess.PAWN],
+            "Knight": PIECE_VALUES[chess.KNIGHT],
+            "Bishop": PIECE_VALUES[chess.BISHOP],
+            "Rook": PIECE_VALUES[chess.ROOK],
+            "Queen": PIECE_VALUES[chess.QUEEN],
+            "King": PIECE_VALUES[chess.KING],
+        }
+
+        threats.sort(
+            key=lambda item: (
+                item.hanging,
+                piece_values_by_name.get(item.piece, 0.0)
+            ),
+            reverse=True
+        )
+
+        return TacticalReport(
+            side_to_move=self._color_name(us),
+            legal_capture_count=len(legal_captures),
+            captures=captures,
+            threatened_pieces=tuple(threats),
+        )
+
+    def _quiescence(
+        self,
+        board: chess.Board,
+        alpha: float,
+        beta: float,
+        depth: int,
+        ply: int
+    ) -> float:
+        self.nodes_searched += 1
+
+        if board.is_checkmate():
+            return -MATE_SCORE + ply
+
+        if (
+            board.is_stalemate()
+            or board.is_insufficient_material()
+            or board.can_claim_draw()
+        ):
+            return 0.0
+
+        in_check = board.is_check()
+
+        if not in_check:
+            stand_pat = self.material_balance(board, board.turn)
+
+            if stand_pat >= beta:
+                return beta
+
+            alpha = max(alpha, stand_pat)
+
+            if depth <= 0:
+                return stand_pat
+
+            moves = [
+                move for move in board.legal_moves
+                if board.is_capture(move) or move.promotion is not None
+            ]
+
+        else:
+            # In check, stand-pat is invalid: search all legal evasions.
+            if depth <= 0:
+                evasions = list(board.legal_moves)
+
+                if not evasions:
+                    return -MATE_SCORE + ply
+
+                best = -MATE_SCORE
+
+                for move in evasions:
+                    board.push(move)
+
+                    if board.is_checkmate():
+                        score = -MATE_SCORE + ply + 1
+                    else:
+                        score = -self.material_balance(
+                            board, board.turn
+                        )
+
+                    board.pop()
+                    best = max(best, score)
+
+                return best
+
+            moves = list(board.legal_moves)
+
+        moves.sort(
+            key=lambda move: self._capture_value(board, move),
+            reverse=True
+        )
+
+        if not moves:
+            return self.material_balance(board, board.turn)
+
+        for move in moves:
+            board.push(move)
+
+            score = -self._quiescence(
+                board,
+                -beta,
+                -alpha,
+                depth - 1,
+                ply + 1
+            )
+
+            board.pop()
+
+            if score >= beta:
+                return beta
+
+            alpha = max(alpha, score)
+
+        return alpha
+
+    def quiescence(
+        self,
+        board: chess.Board,
+        depth: Optional[int] = None
+    ) -> float:
+        """Return a tactical score in pawn units from side-to-move POV."""
+        search_depth = (
+            self.quiescence_depth if depth is None else int(depth)
+        )
+
+        if search_depth < 0:
+            raise ValueError("depth must be >= 0")
+
+        self.nodes_searched = 0
+
+        return self._quiescence(
+            board,
+            -MATE_SCORE,
+            MATE_SCORE,
+            search_depth,
+            0
+        )
+
+    def evaluate(self, board: chess.Board) -> dict:
+        """Return a serializable tactical report."""
+        report = self.analyze(board)
+        score = self.quiescence(board)
+
+        return {
+            "side_to_move": report.side_to_move,
+            "material_balance": self.material_balance(board),
+            "quiescence_score": score,
+            "quiescence_depth": self.quiescence_depth,
+            "nodes_searched": self.nodes_searched,
+            "legal_capture_count": report.legal_capture_count,
+            "captures": list(report.captures),
+            "threatened_pieces": [
+                {
+                    "square": item.square,
+                    "piece": item.piece,
+                    "color": item.color,
+                    "attacked": item.attacked,
+                    "defended": item.defended,
+                    "attacker_count": item.attacker_count,
+                    "defender_count": item.defender_count,
+                    "hanging": item.hanging,
+                    "least_attacker_value": item.least_attacker_value,
+                }
+                for item in report.threatened_pieces
+            ],
+        }

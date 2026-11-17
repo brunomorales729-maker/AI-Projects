@@ -1,0 +1,107 @@
+"""PUCT search over legal chess moves, guided by the policy/value network."""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from agent.encoding import encode_move
+from agent.policy import ChessPolicy
+
+
+@dataclass
+class Node:
+    prior: float
+    visits: int = 0
+    value_sum: float = 0.0
+    children: dict = field(default_factory=dict)
+
+    @property
+    def q_value(self) -> float:
+        return self.value_sum / self.visits if self.visits else 0.0
+
+
+class MCTS:
+    def __init__(self, policy=None, simulations=50, c_puct=1.5):
+        if simulations < 1:
+            raise ValueError("MCTS simulations must be >= 1")
+        if c_puct <= 0:
+            raise ValueError("c_puct must be positive")
+        self.policy = policy or ChessPolicy()
+        self.simulations = int(simulations)
+        self.c_puct = float(c_puct)
+
+    @staticmethod
+    def _terminal_value(board) -> float:
+        outcome = board.outcome(claim_draw=True)
+        if outcome is None or outcome.winner is None:
+            return 0.0
+        # In a terminal checkmate position the side to move has lost.
+        return -1.0 if board.is_checkmate() else 0.0
+
+    def _expand(self, node, board) -> float:
+        _move, value, probabilities = self.policy.predict(board)
+        for move in board.legal_moves:
+            index = encode_move(move, board.turn)
+            node.children[move] = Node(prior=max(float(probabilities[index].item()), 1e-8))
+        return value
+
+    def _select_child(self, node):
+        best_score, best_move, best_child = -float("inf"), None, None
+        root_visits = math.sqrt(max(1, node.visits))
+        for move, child in node.children.items():
+            q = -child.q_value
+            u = self.c_puct * child.prior * root_visits / (1 + child.visits)
+            score = q + u
+            if score > best_score:
+                best_score, best_move, best_child = score, move, child
+        return best_move, best_child
+
+    def _simulate(self, root, board):
+        node = root
+        path = [root]
+        while node.children and not board.is_game_over(claim_draw=True):
+            move, child = self._select_child(node)
+            board.push(move)
+            node = child
+            path.append(node)
+        value = self._terminal_value(board) if board.is_game_over(claim_draw=True) else self._expand(node, board)
+        for visited in reversed(path):
+            visited.visits += 1
+            visited.value_sum += value
+            value = -value
+
+    def search(self, board, simulations=None, temperature=0.0):
+        if board.is_game_over(claim_draw=True):
+            raise ValueError("Cannot search a terminal position")
+        if temperature < 0:
+            raise ValueError("temperature must be non-negative")
+        count = self.simulations if simulations is None else int(simulations)
+        if count < 1:
+            raise ValueError("simulations must be >= 1")
+
+        root = Node(prior=1.0)
+        self._expand(root, board)
+        for _ in range(count):
+            self._simulate(root, board.copy(stack=True))
+
+        moves = list(root.children)
+        visits = np.asarray([root.children[m].visits for m in moves], dtype=np.float64)
+        if temperature == 0:
+            selected = int(np.argmax(visits))
+        else:
+            weights = visits ** (1.0 / temperature)
+            if weights.sum() <= 0:
+                weights = np.ones_like(weights)
+            selected = int(np.random.choice(len(moves), p=weights / weights.sum()))
+
+        chosen = moves[selected]
+        if chosen not in board.legal_moves:
+            raise RuntimeError("PUCT returned an illegal move")
+        stats = [
+            {"move": move.uci(), "visits": child.visits, "q_value": -child.q_value, "prior": child.prior}
+            for move, child in root.children.items()
+        ]
+        stats.sort(key=lambda item: (item["visits"], item["prior"]), reverse=True)
+        return chosen, stats

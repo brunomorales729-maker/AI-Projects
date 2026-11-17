@@ -1,0 +1,1 @@
+"""Graphical chess interface."""

@@ -1,0 +1,4 @@
+numpy>=1.26
+torch>=2.2
+python-chess>=1.999
+pygame-ce>=2.5
